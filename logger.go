@@ -76,12 +76,13 @@ type LogRequest struct {
 	Status        int         `json:"status,omitempty"`
 	UserAgent     string      `json:"user_agent"`
 	Dump          interface{} `json:"dump,omitempty"`
+	Error         interface{} `json:"error,omitmepty"`
 }
 
 // ToString converts structure to simples string like Apache log
 func (l *LogRequest) ToString() string {
 	return fmt.Sprintf(
-		"[%s] [%s] %s - %d %d %d - %s %s \"%s\" \"%s\"",
+		"[%s] [%s] %s - %d %d %d - %s %s \"%s\" \"%s\" - \"%s\"",
 		l.RequestID,
 		l.RouteName,
 		l.RemoteIP,
@@ -92,6 +93,7 @@ func (l *LogRequest) ToString() string {
 		l.Path,
 		l.QueryString,
 		l.UserAgent,
+		l.Error,
 	)
 }
 
@@ -126,16 +128,24 @@ func (l *LogRequest) SetParams(params interface{}) {
 	l.Params = params
 }
 
+// SetError interface to add error message in log
+func (l *LogRequest) SetError(err interface{}) {
+	l.Error = err
+}
+
 // NewLog Default and basic log message
 func NewLog(r *http.Request, sw *statusWriter) (logMessage *LogRequest) {
 	logMessage = &LogRequest{
-		Method:        r.Method,
-		Path:          r.URL.Path,
-		QueryString:   r.URL.RawQuery,
-		RemoteIP:      realip.FromRequest(r),
-		UserAgent:     r.UserAgent(),
-		Status:        sw.status,
-		ContentLength: sw.length,
+		Method:      r.Method,
+		Path:        r.URL.Path,
+		QueryString: r.URL.RawQuery,
+		RemoteIP:    realip.FromRequest(r),
+		UserAgent:   r.UserAgent(),
+	}
+
+	if sw != nil {
+		logMessage.Status = sw.status
+		logMessage.ContentLength = sw.length
 	}
 
 	dump, err := httputil.DumpRequest(r, true)
@@ -178,40 +188,29 @@ func handler(inner http.Handler) func(w http.ResponseWriter, r *http.Request) {
 			r = r.WithContext(ctx)
 		}
 
-		inner.ServeHTTP(sw, r)
+		defer func() {
+			err := recover()
+			if err != nil {
+				fmt.Println(err) // May be log this error? Send to sentry?
 
-		l := defaultMiddleware.NewLog(r, sw)
+				sw.WriteHeader(http.StatusInternalServerError)
+				sw.Write([]byte("There was an internal server error"))
 
-		// Add duration if timed log
-		if (Resources & ResourceDuration) != 0 {
-			if li, ok := l.(MiddlewareTimed); ok {
-				li.SetDuration(time.Since(start).Milliseconds())
-			}
-		}
+				l := prepareLog(r, sw, start)
 
-		// Add request id if exists log
-		if (Resources & ResourceRequestID) != 0 {
-			if li, ok := l.(MiddlewareRequestID); ok {
-				li.SetRequestID(r.Context().Value(ContextRequestID).(string))
-			}
-		}
-
-		// Add name if named log
-		if (Resources & ResourceName) != 0 {
-			if li, ok := l.(MiddlewareNamed); ok {
-				if name := r.Context().Value(ContextRouteName); name != nil {
-					li.SetName(name.(string))
+				// Add Error message to log
+				if li, ok := l.(MiddlewareError); ok {
+					li.SetError(err)
 				}
 
+				go defaultMiddleware.Send(l)
 			}
-		}
 
-		// Add parameters if exists
-		if (Resources & ResourceParams) != 0 {
-			if li, ok := l.(MiddlewareParams); ok {
-				li.SetParams(r.Context().Value(ContextParams))
-			}
-		}
+		}()
+
+		inner.ServeHTTP(sw, r)
+
+		l := prepareLog(r, sw, start)
 
 		if li, ok := l.(MiddlewareChecker); ok {
 			if li.Check(l) {
@@ -220,7 +219,45 @@ func handler(inner http.Handler) func(w http.ResponseWriter, r *http.Request) {
 		} else {
 			go defaultMiddleware.Send(l)
 		}
+
 	}
+}
+
+func prepareLog(r *http.Request, sw *statusWriter, start time.Time) Log {
+	l := defaultMiddleware.NewLog(r, sw)
+
+	// Add duration if timed log
+	if (Resources & ResourceDuration) != 0 {
+		if li, ok := l.(MiddlewareTimed); ok {
+			li.SetDuration(time.Since(start).Milliseconds())
+		}
+	}
+
+	// Add request id if exists log
+	if (Resources & ResourceRequestID) != 0 {
+		if li, ok := l.(MiddlewareRequestID); ok {
+			li.SetRequestID(r.Context().Value(ContextRequestID).(string))
+		}
+	}
+
+	// Add name if named log
+	if (Resources & ResourceName) != 0 {
+		if li, ok := l.(MiddlewareNamed); ok {
+			if name := r.Context().Value(ContextRouteName); name != nil {
+				li.SetName(name.(string))
+			}
+
+		}
+	}
+
+	// Add parameters if exists
+	if (Resources & ResourceParams) != 0 {
+		if li, ok := l.(MiddlewareParams); ok {
+			li.SetParams(r.Context().Value(ContextParams))
+		}
+	}
+
+	return l
 }
 
 // Use defines which middleware should be use to send logs
@@ -229,4 +266,9 @@ func Use(name string) {
 	if a != nil {
 		defaultMiddleware = a
 	}
+}
+
+// Default returns default middleware logger
+func Default() Middleware {
+	return defaultMiddleware
 }

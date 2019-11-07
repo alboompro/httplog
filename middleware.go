@@ -34,6 +34,11 @@ type MiddlewareParams interface {
 	SetParams(interface{})
 }
 
+// MiddlewareError interface to add error message into the log
+type MiddlewareError interface {
+	SetError(interface{})
+}
+
 // MiddlewareNamed interface to add name of route into the log
 type MiddlewareNamed interface {
 	SetName(name string)

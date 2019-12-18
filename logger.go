@@ -81,8 +81,9 @@ type LogRequest struct {
 
 // ToString converts structure to simples string like Apache log
 func (l *LogRequest) ToString() string {
+
 	return fmt.Sprintf(
-		"[%s] [%s] %s - %d %d %d - %s %s \"%s\" \"%s\" - \"%s\"",
+		"[%s] [%s] %s - %d %d %d - %s %s \"%s\" \"%s\" - \"%v\"",
 		l.RequestID,
 		l.RouteName,
 		l.RemoteIP,
